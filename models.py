@@ -10,5 +10,5 @@ class Empresas(Base):
     direccion = Column(String)
     telefono = Column(String)
     pagina_web = Column(String, nullable=True)
-    logo_path = Column(String, nullable=True)  # Ruta del archivo en el servidor
+    logo_path = Column(String, nullable=True) 
 

@@ -1,31 +1,25 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Query, Path
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Path
 from sqlalchemy.orm import Session
-from database import engine, SessionLocal
+from sqlalchemy import select
+from fastapi.responses import Response
+from database import SessionLocal, engine
 import models
-import os
-import shutil
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
-from fastapi import status
-
 
 app = FastAPI()
 models.Base.metadata.create_all(bind=engine)
 
-# Crear carpeta para logos
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# 🔐 CORS para conexión con frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # Cambia si tu frontend está en otro dominio
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# ✏️ Esquema para validar JSON (empresa)
-class EmpresaBase(BaseModel):
-    ruc: str
-    razon_social: str
-    correo: str
-    direccion: str
-    telefono: str
-    pagina_web: str
-
-# 🔌 Dependencia de base de datos
+# 🧩 DB dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -33,158 +27,73 @@ def get_db():
     finally:
         db.close()
 
-# ✅ POST: Crear empresa con imagen
+
 @app.post("/empresas/")
-async def crear_empresa(
-    ruc: str = Form(...),
+async def create_empresa(
     razon_social: str = Form(...),
+    ruc: str = Form(...),
     correo: str = Form(...),
     direccion: str = Form(...),
     telefono: str = Form(...),
     pagina_web: str = Form(...),
-    logo: UploadFile = File(...),
+    logo: UploadFile = File(None),
     db: Session = Depends(get_db)
 ):
-    # Verificar duplicado
-    empresa_existente = db.query(models.Empresas).filter(models.Empresas.ruc == ruc).first()
-    if empresa_existente:
-        raise HTTPException(status_code=400, detail="La empresa con este RUC ya existe")
+    logo_binario = await logo.read() if logo else None
 
-    # Guardar el archivo en la carpeta
-    logo_filename = f"{ruc}_{logo.filename}"
-    logo_path = os.path.join(UPLOAD_FOLDER, logo_filename)
-    with open(logo_path, "wb") as buffer:
-        shutil.copyfileobj(logo.file, buffer)
-
-    # Crear registro
-    nueva_empresa = models.Empresas(
-        ruc=ruc,
+    nueva = models.Empresas(
         razon_social=razon_social,
-        correo_electronico=correo,
+        ruc=ruc,
+        correo=correo,
         direccion=direccion,
         telefono=telefono,
         pagina_web=pagina_web,
-        logo_path=logo_path
+        logo=logo_binario
     )
-
-    db.add(nueva_empresa)
+    db.add(nueva)
     db.commit()
-    db.refresh(nueva_empresa)
-
-    return {"message": "Empresa creada con éxito", "empresa": nueva_empresa}
-
+    db.refresh(nueva)
+    return {"message": "Empresa creada", "id": nueva.id}
 
 
-@app.get("/empresas_todo/")
-async def obtener_empresas(db: Session = Depends(get_db)):
-    empresas = db.query(models.Empresas).all()
-    resultados = []
-    for empresa in empresas:
-        resultados.append({
-            "ruc": empresa.ruc,
-            "razon_social": empresa.razon_social,
-            "correo_electronico": empresa.correo_electronico,
-            "direccion": empresa.direccion,
-            "telefono": empresa.telefono,
-            "pagina_web": empresa.pagina_web,
-            "logo_url": f"http://127.0.0.1:8000/{empresa.logo_path}" if empresa.logo_path else None
-        })
-    return resultados
-
-
-
-@app.get("/empresas_ruc/")
-async def obtener_empresas(
-    ruc: Optional[str] = Query(None, description="RUC de la empresa a buscar"),
-    db: Session = Depends(get_db)
-):
+@app.get("/empresas/")
+def obtener_empresas(ruc: Optional[str] = None, db: Session = Depends(get_db)):
     if ruc:
         empresa = db.query(models.Empresas).filter(models.Empresas.ruc == ruc).first()
         if not empresa:
             raise HTTPException(status_code=404, detail="Empresa no encontrada")
+
         return {
+            "id": empresa.id,
             "ruc": empresa.ruc,
             "razon_social": empresa.razon_social,
-            "correo_electronico": empresa.correo_electronico,
+            "correo": empresa.correo,
             "direccion": empresa.direccion,
             "telefono": empresa.telefono,
             "pagina_web": empresa.pagina_web,
-            "logo_url": f"http://127.0.0.1:8000/{empresa.logo_path}" if empresa.logo_path else None
+            "logo_url": f"http://localhost:8000/empresas/{empresa.id}/logo" if empresa.logo else None
         }
-    else:
-        empresas = db.query(models.Empresas).all()
-        resultados = []
-        for empresa in empresas:
-            resultados.append({
-                "ruc": empresa.ruc,
-                "razon_social": empresa.razon_social,
-                "correo_electronico": empresa.correo_electronico,
-                "direccion": empresa.direccion,
-                "telefono": empresa.telefono,
-                "pagina_web": empresa.pagina_web,
-                "logo_url": f"http://127.0.0.1:8000/{empresa.logo_path}" if empresa.logo_path else None
-            })
-        return resultados
 
-
-@app.put("/empresas/{ruc}")
-async def actualizar_empresa(
-    ruc: str = Path(..., description="RUC de la empresa a actualizar"),
-    razon_social: str = Form(...),
-    correo: str = Form(...),
-    direccion: str = Form(...),
-    telefono: str = Form(...),
-    pagina_web: str = Form(...),
-    logo: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db)
-):
-    empresa = db.query(models.Empresas).filter(models.Empresas.ruc == ruc).first()
-
-    if not empresa:
-        raise HTTPException(status_code=404, detail="Empresa no encontrada")
-
-    # Actualizar campos de texto
-    empresa.razon_social = razon_social
-    empresa.correo_electronico = correo
-    empresa.direccion = direccion
-    empresa.telefono = telefono
-    empresa.pagina_web = pagina_web
-
-    # Si se subió un nuevo logo, eliminar el anterior y guardar el nuevo
-    if logo:
-        # Eliminar logo anterior si existe
-        if empresa.logo_path and os.path.exists(empresa.logo_path):
-            os.remove(empresa.logo_path)
-
-        # Guardar el nuevo logo
-        logo_filename = f"{ruc}_{logo.filename}"
-        logo_path = os.path.join("uploads", logo_filename)
-
-        with open(logo_path, "wb") as buffer:
-            shutil.copyfileobj(logo.file, buffer)
-
-        empresa.logo_path = logo_path
-
-    db.commit()
-    db.refresh(empresa)
-
-    return {
-        "message": "Empresa actualizada exitosamente",
-        "empresa": {
+    empresas = db.query(models.Empresas).all()
+    resultado = []
+    for empresa in empresas:
+        resultado.append({
+            "id": empresa.id,
             "ruc": empresa.ruc,
             "razon_social": empresa.razon_social,
-            "correo_electronico": empresa.correo_electronico,
+            "correo": empresa.correo,
             "direccion": empresa.direccion,
             "telefono": empresa.telefono,
             "pagina_web": empresa.pagina_web,
-            "logo_url": f"http://127.0.0.1:8000/{empresa.logo_path}" if empresa.logo_path else None
-        }
-    }
+            "logo_url": f"http://localhost:8000/empresas/{empresa.id}/logo" if empresa.logo else None
+        })
+    return resultado
+
 
 
 @app.patch("/empresas/{ruc}")
-async def modificar_empresa(
-    ruc: str = Path(..., description="RUC de la empresa a modificar"),
+async def modificar_empresa_por_ruc(
+    ruc: str,
     razon_social: Optional[str] = Form(None),
     correo: Optional[str] = Form(None),
     direccion: Optional[str] = Form(None),
@@ -198,30 +107,18 @@ async def modificar_empresa(
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
 
-    # Actualizar solo los campos que se enviaron
-    if razon_social is not None:
+    if razon_social:
         empresa.razon_social = razon_social
-    if correo is not None:
-        empresa.correo_electronico = correo
-    if direccion is not None:
+    if correo:
+        empresa.correo = correo
+    if direccion:
         empresa.direccion = direccion
-    if telefono is not None:
+    if telefono:
         empresa.telefono = telefono
-    if pagina_web is not None:
+    if pagina_web:
         empresa.pagina_web = pagina_web
-
-    # Si se subió un nuevo logo, eliminar el anterior y guardar el nuevo
     if logo:
-        if empresa.logo_path and os.path.exists(empresa.logo_path):
-            os.remove(empresa.logo_path)
-
-        logo_filename = f"{ruc}_{logo.filename}"
-        logo_path = os.path.join("uploads", logo_filename)
-
-        with open(logo_path, "wb") as buffer:
-            shutil.copyfileobj(logo.file, buffer)
-
-        empresa.logo_path = logo_path
+        empresa.logo = await logo.read()
 
     db.commit()
     db.refresh(empresa)
@@ -231,20 +128,19 @@ async def modificar_empresa(
         "empresa": {
             "ruc": empresa.ruc,
             "razon_social": empresa.razon_social,
-            "correo_electronico": empresa.correo_electronico,
+            "correo": empresa.correo,
             "direccion": empresa.direccion,
             "telefono": empresa.telefono,
             "pagina_web": empresa.pagina_web,
-            "logo_url": f"http://127.0.0.1:8000/{empresa.logo_path}" if empresa.logo_path else None
+            "logo_url": f"http://localhost:8000/empresas/{empresa.id}/logo" if empresa.logo else None
         }
     }
 
 
 
-
-@app.delete("/empresas/{ruc}", status_code=status.HTTP_200_OK)
-async def eliminar_empresa(
-    ruc: str = Path(..., description="RUC de la empresa a eliminar"),
+@app.delete("/empresas/{ruc}")
+def eliminar_empresa_por_ruc(
+    ruc: str,
     db: Session = Depends(get_db)
 ):
     empresa = db.query(models.Empresas).filter(models.Empresas.ruc == ruc).first()
@@ -252,13 +148,11 @@ async def eliminar_empresa(
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
 
-    # Eliminar el archivo del logo si existe
-    if empresa.logo_path and os.path.exists(empresa.logo_path):
-        os.remove(empresa.logo_path)
-
-    # Eliminar el registro de la base de datos
     db.delete(empresa)
     db.commit()
 
     return {"message": f"Empresa con RUC {ruc} eliminada correctamente"}
+
+
+
 
